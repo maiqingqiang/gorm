@@ -28,6 +28,20 @@ type SerializerStruct struct {
 	EncryptedString        EncryptedString
 }
 
+type SerializerStructByTimestamp struct {
+	gorm.Model
+	Name                   []byte                 `gorm:"json"`
+	Roles                  Roles                  `gorm:"serializer:json"`
+	Roles2                 *Roles                 `gorm:"serializer:json"`
+	Roles3                 *Roles                 `gorm:"serializer:json;not null"`
+	Contracts              map[string]interface{} `gorm:"serializer:json"`
+	JobInfo                Job                    `gorm:"type:bytes;serializer:gob"`
+	CreatedTime            int64                  `gorm:"serializer:unixtime;type:timestamp"` // store time in db, use int as field type
+	UpdatedTime            *int64                 `gorm:"serializer:unixtime;type:timestamp"` // store time in db, use int as field type
+	CustomSerializerString string                 `gorm:"serializer:custom"`
+	EncryptedString        EncryptedString
+}
+
 type Roles []string
 
 type Job struct {
@@ -80,6 +94,10 @@ func (c *CustomSerializer) Value(ctx context.Context, field *schema.Field, dst r
 }
 
 func TestSerializer(t *testing.T) {
+	if DB.Dialector.Name() == "postgres" {
+		return
+	}
+
 	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
 	DB.Migrator().DropTable(&SerializerStruct{})
 	if err := DB.Migrator().AutoMigrate(&SerializerStruct{}); err != nil {
@@ -125,7 +143,61 @@ func TestSerializer(t *testing.T) {
 	}
 }
 
+func TestSerializerByTimestamp(t *testing.T) {
+	if DB.Dialector.Name() != "postgres" {
+		return
+	}
+
+	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
+	DB.Migrator().DropTable(&SerializerStructByTimestamp{})
+	if err := DB.Migrator().AutoMigrate(&SerializerStructByTimestamp{}); err != nil {
+		t.Fatalf("no error should happen when migrate scanner, valuer struct, got error %v", err)
+	}
+
+	createdAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Unix()
+
+	data := SerializerStructByTimestamp{
+		Name:            []byte("jinzhu"),
+		Roles:           []string{"r1", "r2"},
+		Contracts:       map[string]interface{}{"name": "jinzhu", "age": 10},
+		EncryptedString: EncryptedString("pass"),
+		CreatedTime:     createdAt.Unix(),
+		UpdatedTime:     &updatedAt,
+		JobInfo: Job{
+			Title:    "programmer",
+			Number:   9920,
+			Location: "Kenmawr",
+			IsIntern: false,
+		},
+		CustomSerializerString: "world",
+	}
+
+	if err := DB.Create(&data).Error; err != nil {
+		t.Fatalf("failed to create data, got error %v", err)
+	}
+
+	var result SerializerStructByTimestamp
+	if err := DB.Where("roles2 IS NULL AND roles3 = ?", "").First(&result, data.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+
+	AssertEqual(t, result, data)
+
+	if err := DB.Model(&result).Update("roles", "").Error; err != nil {
+		t.Fatalf("failed to update data's roles, got error %v", err)
+	}
+
+	if err := DB.First(&result, data.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+}
+
 func TestSerializerZeroValue(t *testing.T) {
+	if DB.Dialector.Name() == "postgres" {
+		return
+	}
+
 	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
 	DB.Migrator().DropTable(&SerializerStruct{})
 	if err := DB.Migrator().AutoMigrate(&SerializerStruct{}); err != nil {
@@ -154,7 +226,44 @@ func TestSerializerZeroValue(t *testing.T) {
 	}
 }
 
+func TestSerializerZeroValueByTimestamp(t *testing.T) {
+	if DB.Dialector.Name() != "postgres" {
+		return
+	}
+
+	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
+	DB.Migrator().DropTable(&SerializerStructByTimestamp{})
+	if err := DB.Migrator().AutoMigrate(&SerializerStructByTimestamp{}); err != nil {
+		t.Fatalf("no error should happen when migrate scanner, valuer struct, got error %v", err)
+	}
+
+	data := SerializerStructByTimestamp{}
+
+	if err := DB.Create(&data).Error; err != nil {
+		t.Fatalf("failed to create data, got error %v", err)
+	}
+
+	var result SerializerStructByTimestamp
+	if err := DB.First(&result, data.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+
+	AssertEqual(t, result, data)
+
+	if err := DB.Model(&result).Update("roles", "").Error; err != nil {
+		t.Fatalf("failed to update data's roles, got error %v", err)
+	}
+
+	if err := DB.First(&result, data.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+}
+
 func TestSerializerAssignFirstOrCreate(t *testing.T) {
+	if DB.Dialector.Name() == "postgres" {
+		return
+	}
+
 	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
 	DB.Migrator().DropTable(&SerializerStruct{})
 	if err := DB.Migrator().AutoMigrate(&SerializerStruct{}); err != nil {
@@ -185,6 +294,61 @@ func TestSerializerAssignFirstOrCreate(t *testing.T) {
 	}
 
 	var result SerializerStruct
+	if err := DB.First(&result, out.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+	AssertEqual(t, result, out)
+
+	// update record
+	data.Roles = append(data.Roles, "r3")
+	data.JobInfo.Location = "Gates Hillman Complex"
+	if err := DB.Assign(data).FirstOrCreate(&out).Error; err != nil {
+		t.Fatalf("failed to FirstOrCreate Assigned data, got error %v", err)
+	}
+	if err := DB.First(&result, out.ID).Error; err != nil {
+		t.Fatalf("failed to query data, got error %v", err)
+	}
+
+	AssertEqual(t, result.Roles, data.Roles)
+	AssertEqual(t, result.JobInfo.Location, data.JobInfo.Location)
+}
+
+func TestSerializerAssignFirstOrCreateByTimestamp(t *testing.T) {
+
+	if DB.Dialector.Name() != "postgres" {
+		return
+	}
+
+	schema.RegisterSerializer("custom", NewCustomSerializer("hello"))
+	DB.Migrator().DropTable(&SerializerStructByTimestamp{})
+	if err := DB.Migrator().AutoMigrate(&SerializerStructByTimestamp{}); err != nil {
+		t.Fatalf("no error should happen when migrate scanner, valuer struct, got error %v", err)
+	}
+
+	createdAt := time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	data := SerializerStructByTimestamp{
+		Name:            []byte("ag9920"),
+		Roles:           []string{"r1", "r2"},
+		Contracts:       map[string]interface{}{"name": "jing1", "age": 11},
+		EncryptedString: EncryptedString("pass"),
+		CreatedTime:     createdAt.Unix(),
+		JobInfo: Job{
+			Title:    "programmer",
+			Number:   9920,
+			Location: "Shadyside",
+			IsIntern: false,
+		},
+		CustomSerializerString: "world",
+	}
+
+	// first time insert record
+	out := SerializerStructByTimestamp{}
+	if err := DB.Assign(data).FirstOrCreate(&out).Error; err != nil {
+		t.Fatalf("failed to FirstOrCreate Assigned data, got error %v", err)
+	}
+
+	var result SerializerStructByTimestamp
 	if err := DB.First(&result, out.ID).Error; err != nil {
 		t.Fatalf("failed to query data, got error %v", err)
 	}
