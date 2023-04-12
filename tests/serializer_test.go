@@ -314,7 +314,6 @@ func TestSerializerAssignFirstOrCreate(t *testing.T) {
 }
 
 func TestSerializerAssignFirstOrCreateByTimestamp(t *testing.T) {
-
 	if DB.Dialector.Name() != "postgres" {
 		return
 	}
